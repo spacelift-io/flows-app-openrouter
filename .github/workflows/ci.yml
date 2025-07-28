@@ -1,0 +1,117 @@
+# CI/CD Pipeline for Flows Apps
+#
+# This workflow provides:
+# - Continuous Integration: Type checking, formatting validation, and bundling
+# - Automated Releases: Creates GitHub releases on semver tags
+# - Version Registry: Maintains a versions.json file with all published releases
+#
+# Usage:
+# - Push to any branch (except main): Runs CI validation
+# - Push a semver tag (v1.0.0): Runs CI + creates release + updates version registry
+# - The versions.json file is automatically pushed to main branch after each release
+
+name: CI
+
+on:
+  push:
+    tags:
+      - "v*" # Trigger on semver tags (v1.0.0, v2.1.3, etc.)
+    branches:
+      - "*" # Trigger on all branch pushes
+      - "!main" # Except main branch (to avoid conflicts with version registry updates)
+
+jobs:
+  # CI Job: Validates code quality and creates bundle
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Format check
+        run: |
+          npm run format
+          if ! git diff --exit-code; then
+            echo "❌ Code formatting issues detected. Please run 'npm run format' and commit the changes."
+            exit 1
+          fi
+          echo "✅ Code formatting is correct"
+
+      - name: Bundle
+        run: npm run bundle
+
+      # Only upload bundle artifact if this is a tag push (for releases)
+      - name: Upload bundle artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: bundle.tar.gz
+
+  # Release Job: Creates GitHub release and updates version registry
+  # Only runs on semver tag pushes (v1.0.0, v2.1.3, etc.)
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download bundle artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bundle
+
+      # Create a GitHub release with the bundle attached
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bundle.tar.gz
+          draft: false # Ensure release is published immediately
+          prerelease: false # Mark as stable release
+
+      - name: Remove bundle file
+        run: rm -f bundle.tar.gz
+
+      # Generate versions.json containing all published releases
+      # This file serves as a registry for the Flows platform
+      - name: Build versions.json
+        run: |
+          gh api repos/${{ github.repository }}/releases --paginate | jq '
+            map(select(.draft == false and .prerelease == false)) |
+            map({
+              version: (.tag_name | sub("^v"; "")),
+              artifactUrl: (.assets[] | select(.name == "bundle.tar.gz") | .browser_download_url),
+              artifactChecksum: (.assets[] | select(.name == "bundle.tar.gz") | .digest)
+            }) |
+            {versions: .}
+          ' > versions.new.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # Push the updated versions.json to main branch
+      # Note: This requires the GitHub Actions bot to have push access to main
+      # Configure this in repository settings under branch protection rules
+      - name: Push versions.json to main
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git fetch origin main
+          git checkout main
+          mv versions.new.json versions.json
+          git add versions.json
+          git commit -m "Update versions.json with release ${{ github.ref_name }}" || exit 0
+          git push origin main
