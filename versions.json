@@ -1,0 +1,9 @@
+{
+  "versions": [
+    {
+      "version": "0.1.0",
+      "artifactUrl": "https://github.com/spacelift-io/flows-app-openrouter/releases/download/v0.1.0/bundle.tar.gz",
+      "artifactChecksum": "sha256:607df707c22d82f444a80613709e386f3ebc86618ee3f3ecec96730cb2e15205"
+    }
+  ]
+}
